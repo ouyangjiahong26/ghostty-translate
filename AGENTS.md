@@ -31,3 +31,4 @@
 - issue 与 PR 走 GitHub，命令、正文结构与 AI 贡献标记见 `docs/agents/issue-tracker.md`。
 - 分诊标签与技能角色的映射见 `docs/agents/triage-labels.md`。
 - 领域文档布局见 `docs/agents/domain.md`。
+- `docs/agents/` 下的文件被技能按固定字符串读取，其中英文标题、段落名与 AI 标记里的加粗不按写作要求改写。
