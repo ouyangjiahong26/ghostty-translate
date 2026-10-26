@@ -651,7 +651,7 @@ def daemon() -> None:
                 mt = os.stat(_SETTINGS_PATH).st_mtime
             except OSError:
                 mt = 0.0
-            if mt != last_cfg and last_cfg:
+            if last_cfg and mt != last_cfg:
                 old = dict(SETTINGS)
                 load_settings()
                 if (SETTINGS["position"] != old["position"]
@@ -661,7 +661,7 @@ def daemon() -> None:
                         p.terminate()   # respawned with new env on next show
                 print(f"settings reloaded: position={SETTINGS['position']} "
                       f"ttl={SETTINGS['ttl']} filter={SETTINGS['filter']}", flush=True)
-            last_cfg = last_cfg or mt
+            last_cfg = mt
             cur, alive = read_primary()
             cb = read_clipboard()
             if cb != clip["text"]:
