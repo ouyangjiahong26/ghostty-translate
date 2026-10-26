@@ -84,6 +84,27 @@ journalctl --user -u ghostty-translate -f   # see translations in the log
   bypasses mouse reporting), or bind `toggle_mouse_reporting`.
 - The popup translation label is selectable if you want to copy it.
 
+## Control panel
+
+```sh
+ghostty-translate --gui      # or launch "Ghostty Translate" from the app menu
+```
+
+A small GTK4 window controls the tool live: translation switch, popup
+placement, response scope, display duration, LLM model and thinking level,
+service/last-translation status, a test-translation button and a log viewer.
+Changes are written to `~/.config/ghostty-translate/settings.json` and
+`llm.json`; the running daemon hot-reloads them (placement/TTL changes respawn
+the popup window automatically).
+
+Install the app-menu entry and CLI symlink:
+
+```sh
+ln -s "$PWD/ghostty-translate.py" ~/.local/bin/ghostty-translate
+cp ghostty-translate.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications
+```
+
 ## Runtime switch
 
 ```sh
