@@ -362,6 +362,29 @@ def mouse_xy() -> tuple[int, int]:
         return -1, -1
 
 
+def _pause_file() -> str:
+    d = os.path.expanduser("~/.config/ghostty-translate")
+    return os.path.join(d, "paused")
+
+
+def is_paused() -> bool:
+    return os.path.exists(_pause_file())
+
+
+def set_paused(paused: bool) -> bool:
+    path = _pause_file()
+    if paused:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "w") as f:
+            f.write("1\n")
+    else:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+    return paused
+
+
 def _sock_path() -> str:
     base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     return os.path.join(base, f"ghostty-translate-{os.getuid()}.sock")
@@ -458,6 +481,9 @@ def daemon() -> None:
             busy.release()
 
     def consider(cur: str) -> None:
+        if is_paused():        # runtime switch: no translations while paused
+            state["candidate"], state["hits"] = "", 0
+            return
         if cur == state["candidate"]:
             state["hits"] += 1
         else:
@@ -1031,6 +1057,17 @@ def run_popup_server(ttl: int) -> None:
 # ------------------------------------------------------------------ main ----
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ("on", "off", "toggle", "status"):
+        cmd = sys.argv[1]
+        if cmd == "status":
+            print("paused" if is_paused() else "active")
+            return
+        new_state = {"on": False, "off": True}.get(cmd, not is_paused())
+        set_paused(new_state)
+        msg = "已暂停划词翻译（on 恢复）" if new_state else "已恢复划词翻译"
+        _popup_send({"orig": "ghostty-translate", "trans": msg})
+        print(msg)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--once":
         text = " ".join(sys.argv[2:]).strip()
         if not text:
