@@ -38,9 +38,10 @@ zero coupling to Ghostty.
    `top-center`). Set `GTRANS_POSITION=anchor` to instead follow the selection
    (right/below the anchor, flipping near screen edges, clamped to the
    selection's monitor). The daemon talks to the popup over a Unix socket, so
-   updates replace the text in place: no flicker, no window pile-up. Click or
-   any key hides it; it auto-hides after the TTL and is transparent +
-   click-through while hidden.
+   updates replace the text in place: no flicker, no window pile-up. The popup
+   is click-through and auto-hides after the TTL by being **unmapped**, so it
+   can never intercept clicks — not even over fullscreen apps on another
+   monitor.
 5. Text equal to a recent translation (within 5 min) is ignored, so selecting
    inside the popup never triggers a feedback loop.
 6. Only selections made **inside Ghostty** are translated (`GTRANS_FILTER`,
