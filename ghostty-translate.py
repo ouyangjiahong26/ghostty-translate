@@ -763,11 +763,10 @@ def run_popup_server(ttl: int) -> None:
 
         def hide(*_a):
             timers["hide"] = 0
-            # never unmap: mapping animations make mutter ignore placement.
-            # Park transparent + click-through instead.
-            _set_opacity(0.0)
-            _set_input(False)
-            _move_to(0, 0)
+            # Unmap: a hidden window must be incapable of intercepting input.
+            # (Parking it transparent at 0,0 still shadowed fullscreen windows
+            # on the second monitor.)
+            win.set_visible(False)
             return False
 
         def idle_quit(*_a):
@@ -919,11 +918,15 @@ def run_popup_server(ttl: int) -> None:
             lbl_o.set_text(orig)
             lbl_t.set_text(trans)
             win.set_title("Ghostty Translate · " + trans[:60].replace("\n", " "))
-            _set_input(True)
+            _set_hints()        # type/state must be in place before the map
+            _set_input(False)   # click-through: never swallow clicks
             _set_opacity(1.0)
-            _set_hints()        # keep above the terminal, no focus steal
+            if not win.get_visible():
+                win.present()   # remap; placement retries absorb map animation
+            GLib.timeout_add(150, lambda: (_set_hints(), _raise(), False)[2])
+            GLib.timeout_add(500, lambda: (_set_hints(), _raise(), False)[2])
             _raise()
-            position()          # pure move on an already-mapped window: instant
+            position()
             arm_hide()
             arm_idle()
 
@@ -998,17 +1001,10 @@ def run_popup_server(ttl: int) -> None:
 
         arm_idle()
 
-        # Map the window once, invisibly, click-through: subsequent shows are pure
-        # moves on a mapped window (mutter ignores placement during map animation).
-        # Realize first so the EWMH hints are in place before the window is mapped.
-        _set_opacity(0.0)
-        _set_input(False)
+        # Realize only (no map): the window stays unmapped until the first
+        # translation, so it can never shadow other windows while idle.
         win.realize()
         GLib.timeout_add(100, lambda: (_set_hints(), False)[1])
-        GLib.timeout_add(200, lambda: (win.present(), False)[1])
-        # re-apply once mapped: pre-map xprop calls can miss the X window
-        GLib.timeout_add(350, lambda: (_set_hints(), _set_opacity(0.0), False)[2])
-        GLib.timeout_add(450, lambda: (_move_to(0, 0), False)[1])
 
         def _mem_guard():
             import threading as _th
