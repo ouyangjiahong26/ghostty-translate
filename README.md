@@ -84,6 +84,20 @@ journalctl --user -u ghostty-translate -f   # see translations in the log
   bypasses mouse reporting), or bind `toggle_mouse_reporting`.
 - The popup translation label is selectable if you want to copy it.
 
+## Runtime switch
+
+```sh
+./ghostty-translate.py off      # pause: no translations
+./ghostty-translate.py on       # resume
+./ghostty-translate.py toggle   # flip
+./ghostty-translate.py status   # paused | active
+```
+
+The state lives in `~/.config/ghostty-translate/paused` (survives restarts),
+and each toggle pops a short on-screen confirmation. For one-keystroke control,
+bind a GNOME custom shortcut (Settings → Keyboard → Custom Shortcuts) to the
+`toggle` command.
+
 ## Configuration (environment)
 
 | Variable                 | Default                          | Meaning                              |
