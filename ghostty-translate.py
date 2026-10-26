@@ -99,6 +99,72 @@ def _load_llm_cfg() -> dict:
 
 LLM = _load_llm_cfg()
 
+# ---- runtime settings (GUI-editable, hot-reloaded by the daemon) ----------
+_CFG_DIR = os.path.expanduser("~/.config/ghostty-translate")
+_SETTINGS_PATH = os.path.join(_CFG_DIR, "settings.json")
+_STATUS_PATH = os.path.join(_CFG_DIR, "status.json")
+
+_BASE_SETTINGS = {
+    "position": POSITION_MODE, "filter": FILTER_MODE, "ttl": TTL,
+    "min_chars": MIN_CHARS, "max_chars": MAX_CHARS,
+    "target_primary": TARGET_ZH, "target_secondary": TARGET_EN,
+}
+SETTINGS = dict(_BASE_SETTINGS)
+
+
+def load_settings() -> dict:
+    """settings.json overrides env defaults; called at start and on change."""
+    global SETTINGS
+    d = dict(_BASE_SETTINGS)
+    try:
+        with open(_SETTINGS_PATH) as f:
+            for k, v in json.load(f).items():
+                if k in d and v not in (None, ""):
+                    d[k] = v
+    except FileNotFoundError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"settings: {e}", flush=True)
+    SETTINGS = d
+    return d
+
+
+def save_settings(patch: dict) -> None:
+    os.makedirs(_CFG_DIR, mode=0o700, exist_ok=True)
+    cur = dict(_BASE_SETTINGS)
+    try:
+        with open(_SETTINGS_PATH) as f:
+            cur.update(json.load(f))
+    except Exception:
+        pass
+    cur.update({k: v for k, v in patch.items() if k in cur})
+    tmp = _SETTINGS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cur, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _SETTINGS_PATH)
+
+
+def write_status(**fields) -> None:
+    os.makedirs(_CFG_DIR, mode=0o700, exist_ok=True)
+    try:
+        cur = {}
+        with open(_STATUS_PATH) as f:
+            cur.update(json.load(f))
+    except Exception:
+        pass
+    cur.update(fields)
+    cur["updated"] = time.time()
+    if fields.get("last"):
+        cur["last"].setdefault("ts", time.time())
+    try:
+        tmp = _STATUS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cur, f, ensure_ascii=False)
+        os.replace(tmp, _STATUS_PATH)
+    except Exception:
+        pass
+
+
 POLL_MS = 350          # selection poll interval
 STABLE_READS = 2       # identical consecutive reads => selection finished
 RERESELECT_S = 30      # re-show popup if the same text is selected again after this
@@ -114,10 +180,12 @@ def cjk_ratio(text: str) -> float:
 
 
 def pick_langs(text: str) -> tuple[str, str]:
-    """Return (source, target): CJK text -> English, anything else -> TARGET_ZH."""
+    """Return (source, target): CJK text -> secondary target, else primary."""
+    tp = SETTINGS.get("target_primary", TARGET_ZH)
+    ts = SETTINGS.get("target_secondary", TARGET_EN)
     if cjk_ratio(text) >= 0.3:
-        return "zh-CN", TARGET_EN if TARGET_EN != TARGET_ZH else "en"
-    return "auto", TARGET_ZH
+        return "zh-CN", ts if ts != tp else "en"
+    return "auto", tp
 
 
 def _http_json(url: str, data=None, timeout: int = 8, extra_headers=None):
@@ -410,9 +478,10 @@ def _start_popup_server(child_holder: dict) -> bool:
         env = x11_env()
         if env.get("DISPLAY"):  # X11 popup => we can position it at the mouse
             env["GDK_BACKEND"] = "x11"
+        env["GTRANS_POSITION"] = str(SETTINGS["position"])
         child_holder["proc"] = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "--popup", "--serve",
-             "--ttl", str(TTL)],
+             "--ttl", str(SETTINGS["ttl"])],
             env=env, start_new_session=True)
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
@@ -449,10 +518,12 @@ def notify(orig: str, trans: str) -> None:
 
 
 def daemon() -> None:
+    load_settings()
     llm_info = (f" | llm={LLM['model']} @ {LLM['endpoint']}"
                 if LLM["endpoint"] and LLM["model"] else " | llm=off")
     print(f"ghostty-translate: watching PRIMARY selection "
-          f"(zh<->{TARGET_EN}, backends={BACKENDS}){llm_info}", flush=True)
+          f"(backends={BACKENDS}, position={SETTINGS['position']}){llm_info}", flush=True)
+    write_status(pid=os.getpid(), started=time.time(), paused=is_paused())
     child_holder: dict = {}
     seen: dict[str, float] = {}
     state = {"candidate": "", "hits": 0, "ax": -1, "ay": -1}
@@ -470,6 +541,9 @@ def daemon() -> None:
             skips["n"] = 0
             seen[text] = time.monotonic()
             own_texts[trans] = time.monotonic()
+            write_status(last={"text": text[:200], "trans": trans[:500],
+                               "backend": backend, "langs": langs,
+                               "ts": time.time()}, paused=False)
             for d, limit in ((seen, 128), (own_texts, 128)):
                 if len(d) > limit:
                     for k, _ts in sorted(d.items(), key=lambda kv: kv[1])[:64]:
@@ -499,7 +573,8 @@ def daemon() -> None:
             state["candidate"], state["hits"] = cur, 1
             return
         text = state["candidate"]
-        if state["hits"] < STABLE_READS or not MIN_CHARS <= len(text) <= MAX_CHARS:
+        if (state["hits"] < STABLE_READS
+                or not int(SETTINGS["min_chars"]) <= len(text) <= int(SETTINGS["max_chars"])):
             return
         if not _LETTER.search(text):
             return
@@ -507,7 +582,7 @@ def daemon() -> None:
             return
         if time.monotonic() - own_texts.get(text, 0) < 300:
             return  # selecting our own translation (e.g. inside the popup) is a no-op
-        if FILTER_MODE == "ghostty":
+        if SETTINGS["filter"] == "ghostty":
             # Ghostty (copy-on-select=clipboard) writes PRIMARY *and* CLIPBOARD
             # together; other apps' drag-selects only touch PRIMARY.
             if (clip["text"].strip() != text.strip()
@@ -553,6 +628,10 @@ def daemon() -> None:
 
     rss_guard()
 
+    # retire a popup left over from a previous daemon instance (detached child)
+    if _popup_send({"quit": True}):
+        time.sleep(0.4)
+
     # warm the popup server so the first selection is instant (window stays
     # hidden until the first update)
     threading.Thread(target=_start_popup_server, args=(child_holder,),
@@ -566,7 +645,23 @@ def daemon() -> None:
     # guard above is the last resort.
     def xclip_watcher() -> None:
         fails, interval = 0, POLL_MS
+        last_cfg = 0.0
         while True:
+            try:
+                mt = os.stat(_SETTINGS_PATH).st_mtime
+            except OSError:
+                mt = 0.0
+            if mt != last_cfg and last_cfg:
+                old = dict(SETTINGS)
+                load_settings()
+                if (SETTINGS["position"] != old["position"]
+                        or int(SETTINGS["ttl"]) != int(old["ttl"])):
+                    p = child_holder.get("proc")
+                    if p and p.poll() is None:
+                        p.terminate()   # respawned with new env on next show
+                print(f"settings reloaded: position={SETTINGS['position']} "
+                      f"ttl={SETTINGS['ttl']} filter={SETTINGS['filter']}", flush=True)
+            last_cfg = last_cfg or mt
             cur, alive = read_primary()
             cb = read_clipboard()
             if cb != clip["text"]:
@@ -934,6 +1029,9 @@ def run_popup_server(ttl: int) -> None:
         def apply(payload: dict) -> None:
             orig = str(payload.get("orig", ""))[:2000]
             trans = str(payload.get("trans", ""))[:4000]
+            if payload.get("quit"):
+                app.quit()
+                return
             if not trans:
                 return  # noop/ping
             ax, ay = payload.get("ax"), payload.get("ay")
@@ -1054,6 +1152,176 @@ def run_popup_server(ttl: int) -> None:
     app.run([])
 
 
+# ------------------------------------------------------------------- gui ----
+
+def run_gui() -> None:
+    """GTK4 control panel: switch, placement, scope, TTL, LLM model/thinking,
+    live status and a test-translate button. Writes settings.json + llm.json;
+    the running daemon hot-reloads them."""
+    try:
+        import gi
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import GLib, Gtk
+    except Exception as e:  # noqa: BLE001
+        sys.exit(f"gui: GTK4 unavailable: {e}")
+
+    load_settings()
+    app = Gtk.Application(application_id="org.ghostty.translate.control")
+
+    def activate(_app):
+        win = Gtk.Window(application=_app, title="Ghostty Translate")
+        win.set_default_size(560, -1)
+        win.set_resizable(False)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{side}")(18)
+        win.set_child(box)
+
+        def row(label, widget):
+            r = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            lbl = Gtk.Label(label=label, xalign=0, hexpand=True)
+            r.append(lbl)
+            r.append(widget)
+            box.append(r)
+            return widget
+
+        # --- switch -------------------------------------------------------
+        sw = Gtk.Switch(active=not is_paused(), valign=Gtk.Align.CENTER)
+        row("划词翻译", sw)
+
+        # --- placement / scope -------------------------------------------
+        pos_labels = ["底部居中", "顶部居中", "跟随选区"]
+        pos_values = ["bottom-center", "top-center", "anchor"]
+        pos = Gtk.DropDown.new_from_strings(pos_labels)
+        pos.set_selected(pos_values.index(SETTINGS["position"])
+                         if SETTINGS["position"] in pos_values else 0)
+        row("弹窗位置", pos)
+
+        ttl = Gtk.SpinButton.new_with_range(3, 30, 1)
+        ttl.set_value(float(SETTINGS["ttl"]))
+        row("显示时长（秒）", ttl)
+
+        f_labels = ["仅 Ghostty", "所有应用"]
+        f_values = ["ghostty", "none"]
+        flt = Gtk.DropDown.new_from_strings(f_labels)
+        flt.set_selected(f_values.index(SETTINGS["filter"])
+                         if SETTINGS["filter"] in f_values else 0)
+        row("响应范围", flt)
+
+        # --- llm ----------------------------------------------------------
+        model = Gtk.Entry(text=str(LLM.get("model", "")), width_chars=22)
+        row("LLM 模型", model)
+        think_values = ["off", "low", "medium", "high"]
+        think = Gtk.DropDown.new_from_strings(think_values)
+        cur_think = str(LLM.get("thinking", "off"))
+        think.set_selected(think_values.index(cur_think) if cur_think in think_values else 0)
+        row("思考深度", think)
+
+        # --- status -------------------------------------------------------
+        status_lbl = Gtk.Label(xalign=0)
+        last_lbl = Gtk.Label(xalign=0, wrap=True)
+        last_lbl.set_opacity(0.75)
+        box.append(Gtk.Separator())
+        box.append(status_lbl)
+        box.append(last_lbl)
+
+        # --- buttons ------------------------------------------------------
+        b_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        save_b = Gtk.Button(label="保存并应用")
+        test_b = Gtk.Button(label="测试翻译")
+        log_b = Gtk.Button(label="打开日志")
+        for b in (save_b, test_b, log_b):
+            b.set_hexpand(True)
+            b_row.append(b)
+        box.append(b_row)
+
+        def refresh():
+            # switch mirrors the pause file (CLI or GUI can change it)
+            paused = is_paused()
+            if sw.get_active() == paused:      # avoid fighting the user mid-click
+                sw.set_active(not paused)
+            alive = os.path.exists(_sock_path())
+            status_lbl.set_text(("● 运行中" if alive else "○ 服务未运行")
+                                + ("（已暂停）" if paused else ""))
+            try:
+                with open(_STATUS_PATH) as f:
+                    st = json.load(f)
+                last = st.get("last") or {}
+                if last:
+                    ts = time.strftime("%H:%M:%S", time.localtime(last.get("ts", 0)))
+                    last_lbl.set_text(f"上次 [{last.get('backend','')} {ts}] "
+                                      f"{last.get('text','')[:60]} → {last.get('trans','')[:80]}")
+            except Exception:
+                pass
+            return True
+
+        GLib.timeout_add_seconds(1, refresh)
+
+        def on_switch(w, _state):
+            set_paused(not w.get_active())
+            refresh()
+
+        sw.connect("notify::active", on_switch)
+
+        def on_save(_b):
+            save_settings({"position": pos_values[pos.get_selected()],
+                           "ttl": int(ttl.get_value()),
+                           "filter": f_values[flt.get_selected()]})
+            # llm.json: model + thinking (keep endpoint/key/prompt)
+            path = os.path.expanduser("~/.config/ghostty-translate/llm.json")
+            try:
+                with open(path) as f:
+                    cfg = json.load(f)
+            except Exception:
+                cfg = {}
+            cfg["model"] = model.get_text().strip() or cfg.get("model", "")
+            cfg["thinking"] = think_values[think.get_selected()]
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            os.chmod(path, 0o600)
+            load_settings()
+            LLM.update(_load_llm_cfg())
+            save_b.set_label("已保存 ✓")
+            GLib.timeout_add(1500, lambda: (save_b.set_label("保存并应用"), False)[1])
+
+        save_b.connect("clicked", on_save)
+
+        def on_test(_b):
+            test_b.set_label("翻译中…")
+            test_b.set_sensitive(False)
+
+            def work():
+                try:
+                    out, be, langs = translate("Drag-select translation works.")
+                    text = f"{out}  [{be} {langs}]"
+                except Exception as e:  # noqa: BLE001
+                    text = f"失败: {e}"
+                GLib.idle_add(lambda: (last_lbl.set_text(text),
+                                       test_b.set_label("测试翻译"),
+                                       test_b.set_sensitive(True), False)[3])
+
+            threading.Thread(target=work, daemon=True).start()
+
+        test_b.connect("clicked", on_test)
+
+        def on_log(_b):
+            try:
+                subprocess.Popen(["xdg-terminal-exec", "journalctl", "--user",
+                                  "-u", "ghostty-translate", "-f"])
+            except Exception:
+                last_lbl.set_text("journalctl --user -u ghostty-translate -f")
+
+        log_b.connect("clicked", on_log)
+
+        refresh()
+        win.present()
+
+    app.connect("activate", activate)
+    app.run([])
+
+
 # ------------------------------------------------------------------ main ----
 
 def main() -> None:
@@ -1067,6 +1335,9 @@ def main() -> None:
         msg = "已暂停划词翻译（on 恢复）" if new_state else "已恢复划词翻译"
         _popup_send({"orig": "ghostty-translate", "trans": msg})
         print(msg)
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--gui":
+        run_gui()
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--once":
         text = " ".join(sys.argv[2:]).strip()

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ghostty Translate
+Comment=Drag-select translation for the Ghostty terminal
+Exec=ghostty-translate --gui
+Icon=accessories-dictionary
+Terminal=false
+Categories=Utility;Translation;
+Keywords=translate;ghostty;translate;
